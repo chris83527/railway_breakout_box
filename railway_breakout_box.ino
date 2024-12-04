@@ -1,3 +1,11 @@
+
+#include "AudioFileSourceLittleFS.h"
+#include "AudioGeneratorMP3.h"
+#include "AudioOutputI2S.h"
+
+
+// #include <spiram-fast.h>
+
 #include <Adafruit_MCP23X08.h>
 #include <Adafruit_MCP23X17.h>
 #include <Adafruit_MCP23XXX.h>
@@ -42,6 +50,13 @@ const char* MQTT_TOPIC_SUB = MQTT_ID "/track/turnout/1";
 
 static MqttClient* mqtt = NULL;
 static WiFiClient network;
+
+
+AudioFileSourceLittleFS* audioFile;
+AudioOutputI2S* audioOut;
+AudioGeneratorMP3 *mp3;
+
+
 
 // ============== Object to supply system functions ============================
 class System : public MqttClient::System {
@@ -281,6 +296,7 @@ void setup() {
   MqttClient::Buffer* mqttRecvBuffer = new MqttClient::ArrayBuffer<128>();
   //// Allow up to 2 subscriptions simultaneously
   MqttClient::MessageHandlers* mqttMessageHandlers = new MqttClient::MessageHandlersImpl<2>();
+  mqttMessageHandlers->set(MQTT_TOPIC_SUB, processMessage);
   //// Configure client options
   MqttClient::Options mqttOptions;
   ////// Set command timeout to 10 seconds
@@ -289,19 +305,25 @@ void setup() {
   mqtt = new MqttClient(
     mqttOptions, *mqttLogger, *mqttSystem, *mqttNetwork, *mqttSendBuffer,
     *mqttRecvBuffer, *mqttMessageHandlers);
+
+  // Setup audio
+  audioOut = new AudioOutputI2S();
+  audioFile = new AudioFileSourceLittleFS();
+  mp3 = new AudioGeneratorMP3();
 }
 
 // ============== Subscription callback ========================================
 void processMessage(MqttClient::MessageData& md) {
-	const MqttClient::Message& msg = md.message;
-	char payload[msg.payloadLen + 1];
-	memcpy(payload, msg.payload, msg.payloadLen);
-	payload[msg.payloadLen] = '\0';
-	LOG_PRINTFLN(
-		"Message arrived: qos %d, retained %d, dup %d, packetid %d, payload:[%s]",
-		msg.qos, msg.retained, msg.dup, msg.id, payload
-	);
-  
+
+  const MqttClient::Message& msg = md.message;
+
+  char payload[msg.payloadLen + 1];
+  memcpy(payload, msg.payload, msg.payloadLen);
+  payload[msg.payloadLen] = '\0';
+  LOG_PRINTFLN(
+    "Message arrived: qos %d, retained %d, dup %d, packetid %d, payload:[%s]",
+    msg.qos, msg.retained, msg.dup, msg.id, payload);
+
   digitalWrite(ledPin, (strcmp("ON", payload) == 0));
 }
 
@@ -313,7 +335,7 @@ void loop() {
     network.stop();
     // Re-establish TCP connection with MQTT broker
     LOG_PRINTFLN("Connecting");
-    network.connect("test.mosquitto.org", 1883);
+    network.connect("192.168.5.98", 1883);
     if (!network.connected()) {
       LOG_PRINTFLN("Can't establish the TCP connection");
       delay(5000);
@@ -334,23 +356,20 @@ void loop() {
       if (rc != MqttClient::Error::SUCCESS) {
         LOG_PRINTFLN("Connection error: %i", rc);
         return;
-      }      else {
+      } else {
         LOG_PRINTFLN("Connected to MQTT broker");
       }
     }
     {
-      MqttClient::Error::type rc = mqtt->subscribe(
-				MQTT_TOPIC_SUB, MqttClient::QOS0, processMessage
-			);
-			if (rc != MqttClient::Error::SUCCESS) {
-				LOG_PRINTFLN("Subscribe error: %i", rc);
-				LOG_PRINTFLN("Drop connection");
-				mqtt->disconnect();
-				return;
-			} else {
+      MqttClient::Error::type rc = mqtt->subscribe(MQTT_TOPIC_SUB, MqttClient::QOS0);
+      if (rc != MqttClient::Error::SUCCESS) {
+        LOG_PRINTFLN("Subscribe error: %i", rc);
+        LOG_PRINTFLN("Drop connection");
+        mqtt->disconnect();
+        return;
+      } else {
         LOG_PRINTFLN("Successfully subscribed to topic %s", MQTT_TOPIC_SUB);
       }
-
     }
   } else {
     {
